@@ -43,6 +43,8 @@ from dotenv import load_dotenv
 from azure.identity.aio import DefaultAzureCredential
 from azure.ai.voicelive.aio import VoiceLiveConnection, connect
 from azure.ai.voicelive.models import (
+    AudioEchoCancellation,
+    AudioNoiseReduction,
     AzureStandardVoice,
     InputAudioFormat,
     Modality,
@@ -64,8 +66,8 @@ PROJECT_NAME = os.environ.get("AGENT_PROJECT_NAME", "")
 AGENT_VERSION = os.environ.get("AGENT_VERSION")  # optional; None = latest
 CONVERSATION_ID = os.environ.get("AGENT_CONVERSATION_ID")  # optional
 VOICE = os.environ.get("AGENT_VOICE", "en-US-Ava:DragonHDLatestNeural")
-# Leave unset to use the SDK's own default (2026-04-10 on GA 1.2.0,
-# 2026-07-15 on the 1.3.0 preview). Only override to pin a specific API version.
+# Leave unset to use the SDK's own default (2026-04-10 on GA 1.2.0). Only set
+# this to pin a specific service API version, e.g. when evaluating 1.3.
 API_VERSION = os.environ.get("AZURE_VOICELIVE_API_VERSION")
 
 # Voice Live always uses 24 kHz, 16-bit, mono PCM audio.
@@ -205,9 +207,8 @@ class VoiceAgent:
         logger.info("Connecting to agent '%s' (project '%s')", AGENT_NAME, PROJECT_NAME)
 
         # *** The key part: select the Foundry agent via flattened keywords. ***
-        # api_version is an explicit connect() parameter, independent of the SDK
-        # version. Omit it to use the SDK default, or pin one to evaluate a newer
-        # service API (e.g. 2026-07-15) against your agent.
+        # api_version is an explicit connect() parameter. Omit it to use the SDK
+        # default, or pin one to evaluate a newer service API against your agent.
         optional = {"api_version": API_VERSION} if API_VERSION else {}
         async with connect(
             endpoint=ENDPOINT,
@@ -245,6 +246,10 @@ class VoiceAgent:
             voice=AzureStandardVoice(name=VOICE),
             input_audio_format=InputAudioFormat.PCM16,
             output_audio_format=OutputAudioFormat.PCM16,
+            # Stop the agent transcribing its own speaker output (self-interruption)
+            # when mic and speakers share a room, e.g. laptop without headphones.
+            input_audio_echo_cancellation=AudioEchoCancellation(),
+            input_audio_noise_reduction=AudioNoiseReduction(type="azure_deep_noise_suppression"),
             # Server-side voice activity detection = automatic turn taking.
             turn_detection=ServerVad(threshold=0.5, prefix_padding_ms=300, silence_duration_ms=500),
         )
@@ -275,6 +280,11 @@ class VoiceAgent:
             self.audio.queue_audio(event.delta)
 
         elif event.type == ServerEventType.RESPONSE_DONE:
+            # A failed response (e.g. the agent's model deployment is missing)
+            # returns no audio — surface why instead of silently continuing.
+            if getattr(event.response, "status", None) == "failed":
+                details = getattr(event.response, "status_details", None)
+                logger.error("Agent response failed: %s", details)
             print("🎤 Ready for next input...")
 
         elif event.type == ServerEventType.ERROR:

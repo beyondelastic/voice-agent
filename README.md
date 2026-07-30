@@ -91,5 +91,25 @@ talking over it (barge-in). Press `Ctrl+C` to quit.
   `voice_agent.py` (`_setup_session`). You can instead store voice settings in
   the agent's metadata if you want the Foundry playground to reuse them.
 - **`AGENT_PROJECT_NAME`** is the last path segment of your project endpoint.
+- **Echo cancellation:** `_setup_session` enables server-side
+  `input_audio_echo_cancellation` and `input_audio_noise_reduction`. Without
+  these, on a laptop with open speakers the agent transcribes its own voice and
+  interrupts itself. Headphones are still the most reliable fix.
 - **Test without code first:** In the Foundry portal, open the agent's
   **Playground** and turn on **Voice mode** to talk to the agent in the browser.
+
+## Troubleshooting
+
+- **Agent connects and transcribes you, but never replies (no audio):** the
+  agent's response is failing server-side. The most common cause is that the
+  agent's model deployment does not exist in the project — e.g. the agent was
+  created against a model name that was never deployed. `voice_agent.py` now
+  logs the failure (look for `Agent response failed: ... agent_DeploymentNotFound`).
+  Fix it by setting `MODEL_DEPLOYMENT_NAME` in `.env` to a model that is
+  actually deployed in your project, then re-run `python create_agent.py`. The
+  agent endpoint routes 100% of traffic to `@latest`, so the new version takes
+  effect immediately.
+- **The agent interrupts itself / hears its own voice:** enable echo
+  cancellation (already done in `_setup_session`) or use headphones. You can
+  also make barge-in less sensitive by raising the `ServerVad(threshold=...)`
+  value in `_setup_session`.
