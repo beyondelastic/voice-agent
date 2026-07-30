@@ -1,0 +1,18 @@
+# Azure AI Voice Live SDK (GA, async-only). 1.2.0 introduced the flattened
+# connect() keyword arguments used to talk to a Foundry agent.
+# The [aiohttp] extra is required — the async client uses it for the WebSocket.
+azure-ai-voicelive[aiohttp]>=1.2.0
+
+# Only needed to *create/configure* a Foundry agent (create_agent.py).
+azure-ai-projects>=2.0.0b3
+
+# Entra ID authentication (required for agent mode).
+azure-identity>=1.19.0
+
+# Microphone capture / speaker playback for the console sample.
+# Linux: sudo apt-get install -y portaudio19-dev libasound2-dev
+# macOS: brew install portaudio
+pyaudio>=0.2.14
+
+# Loads settings from the .env file.
+python-dotenv>=1.0.0
