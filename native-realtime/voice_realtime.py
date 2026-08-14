@@ -46,7 +46,9 @@ from azure.core.credentials_async import AsyncTokenCredential
 from azure.identity.aio import DefaultAzureCredential
 from azure.ai.voicelive.aio import VoiceLiveConnection, connect
 from azure.ai.voicelive.models import (
+    AudioEchoCancellation,
     AudioInputTranscriptionOptions,
+    AudioNoiseReduction,
     FunctionCallOutputItem,
     FunctionTool,
     InputAudioFormat,
@@ -259,6 +261,10 @@ class RealtimeVoice:
             voice=VOICE,                     # native model voice (string)
             input_audio_format=InputAudioFormat.PCM16,
             output_audio_format=OutputAudioFormat.PCM16,
+            # Stop the model transcribing its own speaker output (self-interruption)
+            # when mic and speakers share a room, e.g. laptop without headphones.
+            input_audio_echo_cancellation=AudioEchoCancellation(),
+            input_audio_noise_reduction=AudioNoiseReduction(type="azure_deep_noise_suppression"),
             # Server-side voice activity detection = automatic turn taking.
             turn_detection=ServerVad(threshold=0.5, prefix_padding_ms=300, silence_duration_ms=500),
             # Transcribe the member's speech so we can print "👤 You: ...".
