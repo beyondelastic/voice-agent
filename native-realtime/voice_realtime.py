@@ -1,29 +1,30 @@
 #!/usr/bin/env python
 """
-voice_agent.py — Talk to a custom Microsoft Foundry agent with Azure Voice Live.
+voice_realtime.py — Talk to a native gpt-realtime model with Azure Voice Live.
 
-This is a minimal, well-commented example for the CURRENT GA SDK
-(azure-ai-voicelive >= 1.2.0). The important change vs. the old beta docs:
+This is the NATIVE (speech-to-speech) counterpart to ../agent-mode. Instead of a
+managed Foundry agent, you connect straight to a native audio model
+(`gpt-realtime`). One model hears your audio and speaks its reply directly —
+lowest latency, most natural voice. There is no separate STT/TTS step.
 
-    OLD (beta 1.2.0b1..b4):  connect(..., agent_config=AgentSessionConfig(...))
-    NEW (GA 1.2.0):          connect(..., agent_name=..., project_name=...)
+Customization lives IN THIS FILE:
+  - `instructions=` sets the persona/behaviour (the "custom" part).
+  - You can add `tools=[...]` for function calling / MCP if needed.
 
-The agent is now selected with FLATTENED keyword arguments on connect(), and it
-becomes the primary responder for the voice session. The SDK is async-only.
+Key difference vs. agent mode:
+    agent-mode:  connect(..., agent_name=..., project_name=...)   # cascaded
+    native:      connect(..., model="gpt-realtime")               # speech-to-speech
 
-What this script does:
-  1. Opens a WebSocket to Voice Live and attaches your Foundry agent.
-  2. Streams microphone audio up, and plays the agent's spoken reply back.
-  3. Handles barge-in (you can interrupt the agent by speaking).
+Voice Live is fully managed — you do NOT deploy gpt-realtime yourself.
 
-Agent mode requires Microsoft Entra ID auth (run `az login` first).
-API keys are NOT supported for agent connections.
+Auth: works with either Microsoft Entra ID (`az login`, default) or an API key
+(set AZURE_VOICELIVE_API_KEY). Native mode supports both.
 
 Prerequisites (.env):
-  AZURE_VOICELIVE_ENDPOINT, AGENT_NAME, AGENT_PROJECT_NAME
+  AZURE_VOICELIVE_ENDPOINT
 
 Run:
-  python voice_agent.py
+  python voice_realtime.py
 """
 
 from __future__ import annotations
@@ -35,46 +36,67 @@ import os
 import queue
 import signal
 import sys
-from typing import Optional
+from typing import Optional, Union
 
 import pyaudio
 from dotenv import load_dotenv
 
+from azure.core.credentials import AzureKeyCredential
+from azure.core.credentials_async import AsyncTokenCredential
 from azure.identity.aio import DefaultAzureCredential
 from azure.ai.voicelive.aio import VoiceLiveConnection, connect
 from azure.ai.voicelive.models import (
-    AzureStandardVoice,
+    AudioInputTranscriptionOptions,
+    FunctionCallOutputItem,
+    FunctionTool,
     InputAudioFormat,
     Modality,
     OutputAudioFormat,
     RequestSession,
     ServerEventType,
     ServerVad,
+    ToolChoiceLiteral,
 )
 
-load_dotenv()
+# Tools live alongside this script (tools.py, data.json).
+from tools import TOOL_SCHEMAS, run_tool
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_HERE, ".env"))
+
+# Persona lives in instructions.md next to this script.
+with open(os.path.join(_HERE, "instructions.md"), encoding="utf-8") as _f:
+    _DEFAULT_INSTRUCTIONS = _f.read().strip()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("voice_agent")
+logger = logging.getLogger("voice_realtime")
 
 # --- Configuration (from .env) ---------------------------------------------
 ENDPOINT = os.environ.get("AZURE_VOICELIVE_ENDPOINT", "")
-AGENT_NAME = os.environ.get("AGENT_NAME", "")
-PROJECT_NAME = os.environ.get("AGENT_PROJECT_NAME", "")
-AGENT_VERSION = os.environ.get("AGENT_VERSION")  # optional; None = latest
-CONVERSATION_ID = os.environ.get("AGENT_CONVERSATION_ID")  # optional
-VOICE = os.environ.get("AGENT_VOICE", "en-US-Ava:DragonHDLatestNeural")
-# Leave unset to use the SDK's own default (2026-04-10 on GA 1.2.0,
-# 2026-07-15 on the 1.3.0 preview). Only override to pin a specific API version.
+# Native speech-to-speech model. No deployment needed — Voice Live manages it.
+MODEL = os.environ.get("AZURE_VOICELIVE_MODEL", "gpt-realtime")
+# A native model voice (alloy, echo, fable, onyx, nova, shimmer, marin, cedar).
+VOICE = os.environ.get("VOICE_NAME", "alloy")
+# Behaviour comes from instructions.md. Set INSTRUCTIONS in .env to override.
+INSTRUCTIONS = os.environ.get("INSTRUCTIONS") or _DEFAULT_INSTRUCTIONS
+# Optional API key. If unset, Entra ID (az login) is used.
+API_KEY = os.environ.get("AZURE_VOICELIVE_API_KEY")
+# Leave unset to use the SDK's own default API version.
 API_VERSION = os.environ.get("AZURE_VOICELIVE_API_VERSION")
 
 # Voice Live always uses 24 kHz, 16-bit, mono PCM audio.
 SAMPLE_RATE = 24000
 CHUNK_SIZE = 1200  # 50 ms of audio per chunk
 
+# Build Voice Live tool objects from the shared, SDK-agnostic schemas.
+INSURANCE_TOOLS = [
+    FunctionTool(name=s["name"], description=s["description"], parameters=s["parameters"])
+    for s in TOOL_SCHEMAS
+]
+
 
 class AudioProcessor:
-    """Captures microphone audio and plays back the agent's audio.
+    """Captures microphone audio and plays back the model's audio.
 
     PyAudio runs its own callback threads, so audio I/O never blocks the async
     event loop. Playback uses sequence numbers so we can cleanly drop queued
@@ -104,7 +126,6 @@ class AudioProcessor:
             return
 
         def _callback(in_data, _frames, _time, _status):
-            # Send each captured chunk to the service (base64-encoded PCM16).
             audio_b64 = base64.b64encode(in_data).decode("utf-8")
             asyncio.run_coroutine_threadsafe(
                 self.connection.input_audio_buffer.append(audio=audio_b64), self.loop
@@ -174,8 +195,6 @@ class AudioProcessor:
         self.playback_queue.put(AudioProcessor._Packet(self._next_seq(), data))
 
     def skip_pending_audio(self) -> None:
-        # Everything currently queued gets a lower seq_num than the new base,
-        # so the playback callback discards it (used on barge-in).
         self.playback_base = self._next_seq()
 
     def shutdown(self) -> None:
@@ -193,29 +212,23 @@ class AudioProcessor:
         logger.info("Audio cleaned up")
 
 
-class VoiceAgent:
-    """Connects to a Foundry agent and runs the conversation loop."""
+class RealtimeVoice:
+    """Connects to a native gpt-realtime model and runs the conversation loop."""
 
-    def __init__(self, credential: DefaultAzureCredential):
+    def __init__(self, credential: Union[AzureKeyCredential, AsyncTokenCredential]):
         self.credential = credential
         self.connection: Optional[VoiceLiveConnection] = None
         self.audio: Optional[AudioProcessor] = None
 
     async def run(self) -> None:
-        logger.info("Connecting to agent '%s' (project '%s')", AGENT_NAME, PROJECT_NAME)
+        logger.info("Connecting to native model '%s'", MODEL)
 
-        # *** The key part: select the Foundry agent via flattened keywords. ***
-        # api_version is an explicit connect() parameter, independent of the SDK
-        # version. Omit it to use the SDK default, or pin one to evaluate a newer
-        # service API (e.g. 2026-07-15) against your agent.
+        # *** The key part: connect to a native audio model, not an agent. ***
         optional = {"api_version": API_VERSION} if API_VERSION else {}
         async with connect(
             endpoint=ENDPOINT,
             credential=self.credential,
-            agent_name=AGENT_NAME,
-            project_name=PROJECT_NAME,
-            agent_version=AGENT_VERSION,       # optional
-            conversation_id=CONVERSATION_ID,   # optional
+            model=MODEL,
             **optional,
         ) as connection:
             self.connection = connection
@@ -225,7 +238,7 @@ class VoiceAgent:
             self.audio.start_playback()
 
             print("\n" + "=" * 60)
-            print("🎤 VOICE AGENT READY — start speaking (Ctrl+C to exit)")
+            print(f"🎤 REALTIME VOICE READY ({MODEL}) — start speaking (Ctrl+C to exit)")
             print("=" * 60 + "\n")
 
             try:
@@ -235,18 +248,24 @@ class VoiceAgent:
                 self.audio.shutdown()
 
     async def _setup_session(self) -> None:
-        """Apply voice + turn-detection settings for this session.
+        """Configure the native session.
 
-        The agent supplies the instructions/behaviour; here we only configure
-        the audio experience (which voice speaks, how turns are detected).
+        Unlike agent mode, the behaviour (`instructions`) is set here in code.
+        The voice is a native model voice (e.g. 'alloy'), not an Azure TTS voice.
         """
         session = RequestSession(
             modalities=[Modality.TEXT, Modality.AUDIO],
-            voice=AzureStandardVoice(name=VOICE),
+            instructions=INSTRUCTIONS,       # ← custom behaviour, defined in code
+            voice=VOICE,                     # native model voice (string)
             input_audio_format=InputAudioFormat.PCM16,
             output_audio_format=OutputAudioFormat.PCM16,
             # Server-side voice activity detection = automatic turn taking.
             turn_detection=ServerVad(threshold=0.5, prefix_padding_ms=300, silence_duration_ms=500),
+            # Transcribe the member's speech so we can print "👤 You: ...".
+            input_audio_transcription=AudioInputTranscriptionOptions(model="whisper-1"),
+            # Health-insurance tools; the model calls them when useful.
+            tools=INSURANCE_TOOLS,
+            tool_choice=ToolChoiceLiteral.AUTO,
         )
         assert self.connection is not None
         await self.connection.session.update(session=session)
@@ -263,16 +282,20 @@ class VoiceAgent:
             print(f"👤 You:   {event.get('transcript', '')}")
 
         elif event.type == ServerEventType.RESPONSE_AUDIO_TRANSCRIPT_DONE:
-            print(f"🤖 Agent: {event.get('transcript', '')}")
+            print(f"🤖 Model: {event.get('transcript', '')}")
 
         elif event.type == ServerEventType.INPUT_AUDIO_BUFFER_SPEECH_STARTED:
-            # User started talking — stop the agent's current playback (barge-in).
+            # User started talking — stop the model's current playback (barge-in).
             print("🎤 Listening...")
             self.audio.skip_pending_audio()
 
         elif event.type == ServerEventType.RESPONSE_AUDIO_DELTA:
-            # A chunk of the agent's spoken reply — queue it for playback.
+            # A chunk of the model's spoken reply — queue it for playback.
             self.audio.queue_audio(event.delta)
+
+        elif event.type == ServerEventType.RESPONSE_FUNCTION_CALL_ARGUMENTS_DONE:
+            # The model wants to call one of our tools.
+            await self._handle_function_call(event)
 
         elif event.type == ServerEventType.RESPONSE_DONE:
             print("🎤 Ready for next input...")
@@ -280,21 +303,38 @@ class VoiceAgent:
         elif event.type == ServerEventType.ERROR:
             logger.error("Voice Live error: %s", event.error.message)
 
+    async def _handle_function_call(self, event) -> None:
+        """Run the requested tool and send its result back to the model."""
+        output = run_tool(event.name, event.arguments)
+        print(f"🛠️  {event.name}({event.arguments}) → {output}")
+
+        assert self.connection is not None
+        # Return the result (output is a JSON string), then ask the model to
+        # continue speaking with the tool result in context.
+        await self.connection.conversation.item.create(
+            item=FunctionCallOutputItem(call_id=event.call_id, output=output)
+        )
+        await self.connection.response.create()
+
 
 async def _run() -> None:
-    missing = [n for n, v in
-               (("AZURE_VOICELIVE_ENDPOINT", ENDPOINT),
-                ("AGENT_NAME", AGENT_NAME),
-                ("AGENT_PROJECT_NAME", PROJECT_NAME)) if not v]
-    if missing:
-        sys.exit(f"❌ Missing required environment variables: {', '.join(missing)}")
+    if not ENDPOINT:
+        sys.exit("❌ Missing required environment variable: AZURE_VOICELIVE_ENDPOINT")
 
-    # DefaultAzureCredential uses your `az login` session (Entra ID).
-    credential = DefaultAzureCredential()
+    # Native mode accepts an API key or Entra ID. Prefer key if provided.
+    credential: Union[AzureKeyCredential, AsyncTokenCredential]
+    if API_KEY:
+        credential = AzureKeyCredential(API_KEY)
+        logger.info("Using API key credential")
+    else:
+        credential = DefaultAzureCredential()
+        logger.info("Using DefaultAzureCredential (az login)")
+
     try:
-        await VoiceAgent(credential).run()
+        await RealtimeVoice(credential).run()
     finally:
-        await credential.close()
+        if isinstance(credential, AsyncTokenCredential):
+            await credential.close()
 
 
 def main() -> None:

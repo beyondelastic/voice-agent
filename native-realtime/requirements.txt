@@ -1,0 +1,15 @@
+# Azure AI Voice Live SDK (GA, async-only). The [aiohttp] extra is required —
+# the async client uses it for the WebSocket transport.
+azure-ai-voicelive[aiohttp]>=1.2.0
+
+# Entra ID authentication (used when no API key is provided).
+azure-identity>=1.19.0
+
+# Microphone capture / speaker playback for the console sample.
+# Windows: nothing extra (prebuilt wheel)
+# Linux:   sudo apt-get install -y portaudio19-dev libasound2-dev
+# macOS:   brew install portaudio
+pyaudio>=0.2.14
+
+# Loads settings from the .env file.
+python-dotenv>=1.0.0

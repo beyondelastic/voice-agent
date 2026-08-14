@@ -1,95 +1,74 @@
-# Custom Voice Agent with Microsoft Foundry + Azure Voice Live (Python)
+# Custom Voice Agents with Microsoft Foundry + Azure Voice Live (Python)
 
-A minimal, up-to-date example of a **custom voice agent** using the current GA
-Python SDK **`azure-ai-voicelive` (>= 1.2.0)**.
+Two minimal, up-to-date examples of building a **voice agent** with the current
+GA Python SDK **`azure-ai-voicelive` (>= 1.2.0)** — showing the two ways Voice
+Live can drive a conversation.
 
-The published quickstart was written against an older **beta** of 1.2.0 and uses
-the `AgentSessionConfig` / `agent_config=` pattern, which no longer works in GA.
-This example uses the current, supported API.
+The published quickstart was written against an older **beta** and uses the
+`AgentSessionConfig` / `agent_config=` pattern, which no longer works in GA.
+These examples use the current, supported `connect()` API.
 
-## What changed (why the old docs fail)
+## The two options
 
-| | Old beta docs | Current GA (this example) |
+| | [agent-mode/](agent-mode) | [native-realtime/](native-realtime) |
 |---|---|---|
-| Attach agent | `connect(..., agent_config=AgentSessionConfig(...))` | `connect(..., agent_name=..., project_name=...)` |
-| Config style | typed `AgentSessionConfig` object | flattened `connect()` keyword arguments |
-| API version | hardcoded `2026-01-01-preview` | left unset → SDK default (`2026-04-10` on GA 1.2.0) |
-| Sync API | available | **removed** — SDK is async-only |
+| What | Custom **Foundry agent** | Native **gpt-realtime** model |
+| Connect | `connect(agent_name=..., project_name=...)` | `connect(model="gpt-realtime")` |
+| Speech pipeline | Cascaded: Azure STT → text model → Azure TTS | Native speech-to-speech (one model) |
+| Reasoning model | your agent's model (e.g. gpt-5-mini) | gpt-realtime |
+| Instructions & tools | managed on the Foundry agent | defined in code |
+| Extras | versioning, knowledge, tools, eval, monitor | lowest latency, most natural voice |
+| Best when | governed, reusable, observable assistant | latency & voice quality matter most |
 
-The old `FoundryAgentTool` classes were also removed. Agents are now selected at
-connection time via `connect()` keywords and become the primary responder.
+Both are valid for a "custom voice agent" — they differ in **where** the
+customization lives (a managed agent vs. your code) and the **speech
+architecture**. See each folder's README for details and setup.
 
-Source of truth: the official [`agent_v2_sample.py`](https://github.com/Azure/azure-sdk-for-python/blob/main/sdk/voicelive/azure-ai-voicelive/samples/agent_v2_sample.py)
-in the Azure SDK for Python repo.
+> Voice Live is fully managed: you do **not** deploy the speech models
+> (STT/TTS or `gpt-realtime`). In agent mode you *do* deploy the agent's text
+> reasoning model in your Foundry project.
 
-## Files
+## Same use-case, self-contained folders
 
-| File | Purpose |
-|---|---|
-| [create_agent.py](create_agent.py) | One-time: create/update a Foundry agent (model + instructions). |
-| [voice_agent.py](voice_agent.py) | Connect to that agent and hold a live voice conversation. |
-| [requirements.txt](requirements.txt) | Python dependencies. |
-| [.env.example](.env.example) | Configuration template — copy to `.env`. |
+Both examples implement the **same** demo — "Clara", a health-insurance member
+assistant. Each folder keeps its own instructions and tools (so it reads
+top-to-bottom on its own), while the sample **data is shared** in a root
+`data/` folder:
 
-## Prerequisites
+| File | Location | What |
+|---|---|---|
+| `instructions.md` | each folder | The "Clara" persona / behaviour. |
+| `tools.py` | each folder | Function tools (claims, coverage, providers, deductible) + dispatch. |
+| `data.json` | [`data/`](data) (shared) | Mock sample data (no real member data / PHI). |
 
-- Python 3.10+
-- A Microsoft Foundry resource + project, with a model deployed
-- The `Foundry User` role assigned to your account (agent mode needs Entra ID)
-- Audio for the microphone/speaker sample:
-  - Windows: nothing extra — `pip install pyaudio` uses a prebuilt wheel
-  - Linux: `sudo apt-get install -y portaudio19-dev libasound2-dev`
-  - macOS: `brew install portaudio`
+Each example converts its tool schemas into its own SDK's tool object
+(`azure.ai.voicelive.FunctionTool` vs. `azure.ai.projects.FunctionToolParam`).
 
-> Note: WSL2 has no audio devices by default. Run on native Windows (or a
-> machine with a mic and speakers) for the voice conversation.
+## Quick start
 
-## Setup
+Pick one folder and follow its README. Run the scripts from **within** their
+folder so the local `tools.py` / `data.json` / `instructions.md` are found:
 
-**Windows (PowerShell):**
-
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-
-copy .env.example .env     # then fill in the values
-
-az login                   # agent mode requires Entra ID (no API keys)
-```
-
-**Linux / macOS:**
+- **[agent-mode/](agent-mode/README.md)** — create a Foundry agent, then talk to it.
+- **[native-realtime/](native-realtime/README.md)** — talk to `gpt-realtime` directly.
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+cd agent-mode        # or: cd native-realtime
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-cp .env.example .env       # then fill in the values
-
-az login                   # agent mode requires Entra ID (no API keys)
+cp .env.example .env  # then fill in the values
+az login
 ```
 
-## Run
-
-```bash
-# 1. Create the agent (one time)
-python create_agent.py
-
-# 2. Talk to it
-python voice_agent.py
-```
-
-Speak after you see `🎤 VOICE AGENT READY`. You can interrupt the agent by
-talking over it (barge-in). Press `Ctrl+C` to quit.
+Then run the script named in that folder's README.
 
 ## Notes
 
-- **Auth:** Agent connections require Microsoft Entra ID. API-key auth is only
-  for non-agent (raw model) Voice Live sessions.
-- **Voice vs. behaviour:** The agent owns the instructions/behaviour; the voice,
-  turn detection and audio settings are applied per session in
-  `voice_agent.py` (`_setup_session`). You can instead store voice settings in
-  the agent's metadata if you want the Foundry playground to reuse them.
-- **`AGENT_PROJECT_NAME`** is the last path segment of your project endpoint.
-- **Test without code first:** In the Foundry portal, open the agent's
-  **Playground** and turn on **Voice mode** to talk to the agent in the browser.
+- **Auth:** Agent mode requires Microsoft Entra ID (`az login`). Native mode
+  accepts Entra ID **or** an API key.
+- **Audio:** WSL2 has no audio devices — run on native Windows (or any machine
+  with a mic and speakers). On Windows, `pip install pyaudio` uses a prebuilt
+  wheel (no PortAudio compile).
+- **Source of truth:** the official
+  [`agent_v2_sample.py`](https://github.com/Azure/azure-sdk-for-python/blob/main/sdk/voicelive/azure-ai-voicelive/samples/agent_v2_sample.py)
+  in the Azure SDK for Python repo.

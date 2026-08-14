@@ -1,0 +1,56 @@
+{
+  "claims": {
+    "CLM-1001": {
+      "status": "approved",
+      "service": "Annual physical exam",
+      "billed_usd": 220.0,
+      "member_owes_usd": 0.0,
+      "processed_on": "2026-07-28"
+    },
+    "CLM-1002": {
+      "status": "pending",
+      "service": "MRI - left knee",
+      "billed_usd": 1450.0,
+      "note": "Awaiting documentation from the provider"
+    },
+    "CLM-1003": {
+      "status": "denied",
+      "service": "Cosmetic dermatology",
+      "billed_usd": 600.0,
+      "member_owes_usd": 600.0,
+      "reason": "Not a covered benefit"
+    }
+  },
+  "coverage": {
+    "annual physical": {"covered": true, "copay_usd": 0, "note": "Preventive care, covered 100% in-network"},
+    "urgent care": {"covered": true, "copay_usd": 40},
+    "emergency room": {"covered": true, "copay_usd": 250, "note": "Copay waived if you are admitted"},
+    "physical therapy": {"covered": true, "copay_usd": 30, "note": "Up to 20 visits per year"},
+    "mental health": {"covered": true, "copay_usd": 25, "note": "Telehealth available"},
+    "dental cleaning": {"covered": false, "note": "Requires the optional dental add-on plan"}
+  },
+  "providers": {
+    "cardiology": [
+      {"name": "Dr. Amara Okafor", "clinic": "Riverside Heart Center", "accepting_new": true},
+      {"name": "Dr. Leo Fischer", "clinic": "VitalCare Cardiology Group", "accepting_new": false}
+    ],
+    "dermatology": [
+      {"name": "Dr. Priya Nair", "clinic": "ClearSkin Associates", "accepting_new": true}
+    ],
+    "physical therapy": [
+      {"name": "MoveWell PT", "clinic": "MoveWell Downtown", "accepting_new": true}
+    ],
+    "primary care": [
+      {"name": "Dr. Sam Reyes", "clinic": "Family Health Partners", "accepting_new": true}
+    ]
+  },
+  "members": {
+    "M-9087": {
+      "plan": "Gold PPO",
+      "deductible_usd": 1500.0,
+      "deductible_met_usd": 850.0,
+      "out_of_pocket_max_usd": 4000.0,
+      "out_of_pocket_met_usd": 1200.0
+    }
+  }
+}
