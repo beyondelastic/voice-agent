@@ -307,6 +307,7 @@ class VoiceAgent:
 
         assert self.connection is not None
         await self.connection.conversation.item.create(
+            previous_item_id=event.item_id,
             item=FunctionCallOutputItem(call_id=event.call_id, output=output)
         )
         await self.connection.response.create()
