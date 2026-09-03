@@ -208,6 +208,10 @@ class VoiceAgent:
         self.credential = credential
         self.connection: Optional[VoiceLiveConnection] = None
         self.audio: Optional[AudioProcessor] = None
+        # A tool result was submitted and needs a follow-up response, but the
+        # response that requested the tool must finish first (you can't have two
+        # active responses at once).
+        self._response_pending_after_tool = False
 
     async def run(self) -> None:
         logger.info("Connecting to agent '%s' (project '%s')", AGENT_NAME, PROJECT_NAME)
@@ -295,6 +299,12 @@ class VoiceAgent:
             if getattr(event.response, "status", None) == "failed":
                 details = getattr(event.response, "status_details", None)
                 logger.error("Agent response failed: %s", details)
+            # The response that requested a tool has now finished; ask the agent
+            # to continue and speak the tool result.
+            if self._response_pending_after_tool:
+                self._response_pending_after_tool = False
+                assert self.connection is not None
+                await self.connection.response.create()
             print("🎤 Ready for next input...")
 
         elif event.type == ServerEventType.ERROR:
@@ -310,7 +320,9 @@ class VoiceAgent:
             previous_item_id=event.item_id,
             item=FunctionCallOutputItem(call_id=event.call_id, output=output)
         )
-        await self.connection.response.create()
+        # Don't call response.create() yet — the response that requested this
+        # tool is still active. Defer it until RESPONSE_DONE fires.
+        self._response_pending_after_tool = True
 
 
 async def _run() -> None:
